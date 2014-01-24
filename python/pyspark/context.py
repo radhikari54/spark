@@ -130,6 +130,13 @@ class SparkContext(object):
                 varName = k[len("spark.executorEnv."):]
                 self.environment[varName] = v
 
+        # Check if we're running on YARN:
+        if self.master == "yarn-client":
+            if not os.environ.get("SPARK_JAR"):
+                raise Exception("Must set SPARK_JAR when using yarn-client mode")
+            if not os.environ.get("SPARK_YARN_APP_JAR"):
+                raise Exception("Must set SPARK_YARN_APP_JAR when using yarn-client mode")
+
         # Create the Java SparkContext through Py4J
         self._jsc = self._initialize_context(self._conf._jconf)
 

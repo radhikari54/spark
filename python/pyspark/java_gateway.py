@@ -15,6 +15,7 @@
 # limitations under the License.
 #
 
+from glob import glob
 import os
 import sys
 import signal
@@ -28,6 +29,36 @@ SPARK_HOME = os.environ["SPARK_HOME"]
 
 
 def launch_gateway():
+    # If we're running on YARN, we need to set the SPARK_JAR environment
+    # variable prior to launching the gateway JVM.  However, we need to
+    # launch the gateway before we know that we're running on YARN because
+    # SparkConf accesses the JVM to read Spark configuration files.
+    # Therefore, we'll set SPARK_JAR here without knowing whether we're running
+    # on YARN and will perform error-checking later:
+    SPARK_JAR = os.environ.get("SPARK_JAR", "")
+    if not SPARK_JAR:
+        # This is a portable implementation of logic from compute-classpath.sh:
+        if os.path.exists(os.path.join(SPARK_HOME, "RELEASE")):
+            SPARK_JAR = glob(os.path.join(SPARK_HOME, "jars/spark-assembly*.jar"))
+        else:
+            SPARK_JAR = glob(os.path.join(SPARK_HOME,
+                             "assembly/target/scala-*/spark-assembly*hadoop*.jar"))
+        if len(SPARK_JAR) > 1:
+            sys.stderr.write("Warning: found multiple assembly JARS; "
+                             "please remove all but one\n")
+            SPARK_JAR = ""
+        elif len(SPARK_JAR) == 0:
+            SPARK_JAR = ""
+        else:
+            SPARK_JAR = SPARK_JAR[0]
+    os.environ["SPARK_JAR"] = SPARK_JAR
+
+    # PySpark programs shouldn't need to set SPARK_YARN_APP_JAR since their
+    # Java dependencies are included in SPARK_JAR.  Therefore, we'll set it
+    # to a dummy file, unless the user has specified another value:
+    dummy_file = os.path.abspath(os.path.join(SPARK_HOME, "python/test_support/hello.txt"))
+    os.environ["SPARK_YARN_APP_JAR"] = os.environ.get("SPARK_YARN_APP_JAR", dummy_file)
+
     # Launch the Py4j gateway using Spark's run command so that we pick up the
     # proper classpath and settings from spark-env.sh
     on_windows = platform.system() == "Windows"
