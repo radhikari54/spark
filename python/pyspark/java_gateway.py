@@ -25,10 +25,8 @@ from threading import Thread
 from py4j.java_gateway import java_import, JavaGateway, GatewayClient
 
 
-SPARK_HOME = os.environ["SPARK_HOME"]
-
-
 def launch_gateway():
+    SPARK_HOME = os.environ["SPARK_HOME"]
     # If we're running on YARN, we need to set the SPARK_JAR environment
     # variable prior to launching the gateway JVM.  However, we need to
     # launch the gateway before we know that we're running on YARN because
@@ -53,11 +51,9 @@ def launch_gateway():
             SPARK_JAR = SPARK_JAR[0]
     os.environ["SPARK_JAR"] = SPARK_JAR
 
-    # PySpark programs shouldn't need to set SPARK_YARN_APP_JAR since their
-    # Java dependencies are included in SPARK_JAR.  Therefore, we'll set it
-    # to a dummy file, unless the user has specified another value:
-    dummy_file = os.path.abspath(os.path.join(SPARK_HOME, "python/test_support/hello.txt"))
-    os.environ["SPARK_YARN_APP_JAR"] = os.environ.get("SPARK_YARN_APP_JAR", dummy_file)
+    # For YARN, we'll set SPARK_YARN_APP_JAR to the PySpark zip.
+    os.environ["SPARK_YARN_APP_JAR"] = os.environ.get("PYSPARK_ZIP", "")
+    os.environ["SPARK_YARN_USER_ENV"] = "PYTHONPATH=pyspark-assembly.zip"
 
     # Launch the Py4j gateway using Spark's run command so that we pick up the
     # proper classpath and settings from spark-env.sh
