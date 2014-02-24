@@ -51,9 +51,9 @@ def launch_gateway():
             SPARK_JAR = SPARK_JAR[0]
     os.environ["SPARK_JAR"] = SPARK_JAR
 
-    # For YARN, we'll set SPARK_YARN_APP_JAR to the PySpark zip.
-    os.environ["SPARK_YARN_APP_JAR"] = os.environ.get("PYSPARK_ZIP", "")
-    os.environ["SPARK_YARN_USER_ENV"] = "PYTHONPATH=pyspark-assembly.zip"
+    # Add the pyspark zip to the YARN distributed files
+    if "PYSPARK_ZIP" in os.environ:
+        set_env_vars_for_yarn(os.environ["PYSPARK_ZIP"])
 
     # Launch the Py4j gateway using Spark's run command so that we pick up the
     # proper classpath and settings from spark-env.sh
@@ -97,3 +97,30 @@ def launch_gateway():
     java_import(gateway.jvm, "org.apache.spark.sql.hive.TestHiveContext")
     java_import(gateway.jvm, "scala.Tuple2")
     return gateway
+
+def set_env_vars_for_yarn(pyspark_zip):
+    if "SPARK_YARN_DIST_FILES" in os.environ:
+        os.environ["SPARK_YARN_DIST_FILES"] += ("," + pyspark_zip)
+    else:
+        os.environ["SPARK_YARN_DIST_FILES"] = pyspark_zip
+    
+    # Add the pyspark zip to the python path
+    env_map = parse_env(os.environ.get("SPARK_YARN_USER_ENV", ""))
+    if "PYTHONPATH" in env_map:
+        env_map["PYTHONPATH"] += (":" + os.path.basename(pyspark_zip))
+    else:
+        env_map["PYTHONPATH"] = os.path.basename(pyspark_zip)
+
+    os.environ["SPARK_YARN_USER_ENV"] = ",".join(map(lambda v: v[0] + "=" + v[1],
+        env_map.items()))
+
+def parse_env(env_str):
+    # Turns a comma-separated of env settings into a dict that maps env vars to
+    # their values.
+    env = {}
+    for var_str in env_str.split(","):
+        parts = var_str.split("=")
+        if len(parts) == 2:
+            env[parts[0]] = parts[1]
+    
+    return env
