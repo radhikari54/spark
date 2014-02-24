@@ -27,31 +27,9 @@ from py4j.java_gateway import java_import, JavaGateway, GatewayClient
 
 def launch_gateway():
     SPARK_HOME = os.environ["SPARK_HOME"]
-    # If we're running on YARN, we need to set the SPARK_JAR environment
-    # variable prior to launching the gateway JVM.  However, we need to
-    # launch the gateway before we know that we're running on YARN because
-    # SparkConf accesses the JVM to read Spark configuration files.
-    # Therefore, we'll set SPARK_JAR here without knowing whether we're running
-    # on YARN and will perform error-checking later:
-    SPARK_JAR = os.environ.get("SPARK_JAR", "")
-    if not SPARK_JAR:
-        # This is a portable implementation of logic from compute-classpath.sh:
-        if os.path.exists(os.path.join(SPARK_HOME, "RELEASE")):
-            SPARK_JAR = glob(os.path.join(SPARK_HOME, "jars/spark-assembly*.jar"))
-        else:
-            SPARK_JAR = glob(os.path.join(SPARK_HOME,
-                             "assembly/target/scala-*/spark-assembly*hadoop*.jar"))
-        if len(SPARK_JAR) > 1:
-            sys.stderr.write("Warning: found multiple assembly JARS; "
-                             "please remove all but one\n")
-            SPARK_JAR = ""
-        elif len(SPARK_JAR) == 0:
-            SPARK_JAR = ""
-        else:
-            SPARK_JAR = SPARK_JAR[0]
-    os.environ["SPARK_JAR"] = SPARK_JAR
 
-    # Add the pyspark zip to the YARN distributed files
+    # Add the pyspark zip to the YARN distributed files in case we're running
+    # on YARN
     if "PYSPARK_ZIP" in os.environ:
         set_env_vars_for_yarn(os.environ["PYSPARK_ZIP"])
 
