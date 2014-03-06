@@ -120,4 +120,15 @@ object MLUtils {
     }
     sum
   }
+
+  def dotProduct(v1: Array[Double], v2: Array[Double]): Double  = {
+    if (v1.length != v2.length) {
+      throw new IllegalArgumentException("Vector sizes don't match")
+    }
+    var sum = 0.0
+    for (i <- 0 until v1.length) {
+      sum += v1(i) * v2(i)
+    }
+    sum
+  }
 }

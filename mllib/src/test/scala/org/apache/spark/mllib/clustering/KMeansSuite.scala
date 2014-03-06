@@ -22,6 +22,7 @@ import org.scalatest.BeforeAndAfterAll
 import org.scalatest.FunSuite
 
 import org.apache.spark.mllib.util.LocalSparkContext
+import scala.collection.mutable.ArrayBuffer
 
 class KMeansSuite extends FunSuite with LocalSparkContext {
 
@@ -155,5 +156,41 @@ class KMeansSuite extends FunSuite with LocalSparkContext {
     // Neither should more runs
     model = KMeans.train(rdd, k=5, maxIterations=10, runs=5)
     assertSetsEqual(model.clusterCenters, points)
+  }
+
+  test("approx closest point finder") {
+    val points = Array(
+      Array(1.0, 2.0, 6.0),
+      Array(2.0, 3.0, 0.0),
+      Array(1.0, 4.0, 6.0),
+      Array(5.0, 0.0, 1.0),
+      Array(3.0, 1.0, 1.0),
+      Array(-1.0, 2.0, 0.0)
+    )
+
+    val finder = new ApproxClosestPointFinder(32, 3, 3, 5)
+    for (i <- 0 until points.length) {
+      finder.add(points(i), i)
+    }
+
+    // all points should be closest to themselves
+    for (i <- 0 until points.length) {
+      val (dist, id) = finder.getApproxClosestPointAndSqDistance(points(i))
+      assert(id == i)
+    }
+
+    // closest other points should match exact version
+    for (i <- 0 until points.length) {
+      val approxFinder = new ApproxClosestPointFinder(32, 3, 3, 5)
+      val pointsWithout = new ArrayBuffer[Array[Double]]()
+      for (j <- 0 until points.length) {
+        if (j != i) {
+          approxFinder.add(points(j), j)
+          pointsWithout += points(j)
+        }
+      }
+      val (dist, id) = approxFinder.getApproxClosestPointAndSqDistance(points(i))
+      assert(dist - KMeans.pointCost(pointsWithout.toArray, points(i)) < .0001)
+    }
   }
 }

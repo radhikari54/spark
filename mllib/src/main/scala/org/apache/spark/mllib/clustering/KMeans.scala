@@ -28,6 +28,9 @@ import org.apache.spark.Logging
 import org.apache.spark.mllib.util.MLUtils
 import org.apache.spark.util.random.XORShiftRandom
 
+import java.util.BitSet
+import java.util.PriorityQueue
+import java.util.Random
 
 /**
  * K-means clustering with support for multiple parallel runs and a k-means++ like initialization
@@ -43,7 +46,10 @@ class KMeans private (
     var runs: Int,
     var initializationMode: String,
     var initializationSteps: Int,
-    var epsilon: Double)
+    var epsilon: Double,
+    var approxClosestPointsFinding: Boolean = false,
+    var projectionBits: Int = -1,
+    var projectionSamples: Int = -1)
   extends Serializable with Logging
 {
   private type ClusterCenters = Array[Array[Double]]
@@ -106,6 +112,14 @@ class KMeans private (
    */
   def setEpsilon(epsilon: Double): KMeans = {
     this.epsilon = epsilon
+    this
+  }
+
+  def setApproxClosestPointsFinding(approxClosestPointsFinding: Boolean,
+      projectionBits: Int = 32, projectionSamples: Int = 5): KMeans = {
+    this.approxClosestPointsFinding = approxClosestPointsFinding
+    this.projectionBits = projectionBits
+    this.projectionSamples = projectionSamples
     this
   }
 
@@ -216,17 +230,24 @@ class KMeans private (
 
     // On each step, sample 2 * k points on average for each run with probability proportional
     // to their squared distance from that run's current centers
+    val dimensions = centers(0)(0).length
     for (step <- 0 until initializationSteps) {
+      val approxCosters = Array.tabulate(runs)(r => {
+        if (approxClosestPointsFinding) new ApproxClosestPointFinder(
+          projectionBits, projectionSamples, dimensions, seed, centers(r))
+        else null
+      })
+
       val centerArrays = centers.map(_.toArray)
       val sumCosts = data.flatMap { point =>
-        for (r <- 0 until runs) yield (r, KMeans.pointCost(centerArrays(r), point))
+        for (r <- 0 until runs) yield (r, pointCost(centerArrays(r), approxCosters(r), point))
       }.reduceByKey(_ + _).collectAsMap()
       val chosen = data.mapPartitionsWithIndex { (index, points) =>
         val rand = new XORShiftRandom(seed ^ (step << 16) ^ index)
         for {
           p <- points
           r <- 0 until runs
-          if rand.nextDouble() < KMeans.pointCost(centerArrays(r), p) * 2 * k / sumCosts(r)
+          if rand.nextDouble() < pointCost(centerArrays(r), approxCosters(r), p) * 2 * k / sumCosts(r)
         } yield (r, p)
       }.collect()
       for ((r, p) <- chosen) {
@@ -249,8 +270,142 @@ class KMeans private (
 
     finalCenters.toArray
   }
+
+  def pointCost(centers: Array[Array[Double]], approxCoster: ApproxClosestPointFinder,
+      point: Array[Double]): Double = {
+    if (approxClosestPointsFinding)
+      approxCoster.pointCost(point)
+    else
+      KMeans.pointCost(centers, point)
+  }
 }
 
+/**
+ * For the k-means|| initialization, facilitates quickly finding the smallest
+ * distance from a point to a point in a set of points. The point chosen is only
+ * probabilistically the closest one to the given point. It functions by using
+ * locality-sensitive hashing to narrow down the set of nearest points, and then
+ * only calculating exact distances on a subset.
+ */
+private[mllib] class ApproxClosestPointFinder(val projectionBits: Int,
+  val projectionSamples: Int, val dimensions: Int, val seed: Long) extends Serializable {
+
+  val indices = new ArrayBuffer[BitSet]()
+  val points = new ArrayBuffer[Array[Double]]()
+  val lengthsSquared = new ArrayBuffer[Double]()
+  val projection = new Array[Double](dimensions * projectionBits)
+
+  val rand = new Random(seed)
+  for (i <- 0 until projection.length) {
+    projection(i) = rand.nextGaussian()
+  }
+
+  val samplesHeap = new PriorityQueue[Idx](projectionSamples)
+  val samplesArr = new Array[Idx](projectionSamples)
+
+  def this(projectionBits: Int, projectionSamples: Int, dimensions: Int,
+      seed: Int, initialPoints: Seq[Array[Double]]) {
+    this(projectionBits, projectionSamples, dimensions, seed)
+    for (i <- 0 until initialPoints.length) {
+      add(initialPoints(i), i)
+    }
+    this
+  }
+
+  def pointCost(vec: Array[Double]): Double = {
+    getApproxClosestPointAndSqDistance(vec)_1
+  }
+
+  def getApproxClosestPointAndSqDistance(vec: Array[Double]): (Double, Int) = {
+    var distance = Double.PositiveInfinity
+    var closestPoint = -1
+
+    sampleClosest(vec)
+
+    val vecLenSq = MLUtils.dotProduct(vec, vec)
+    samplesHeap.toArray(samplesArr)
+    for (i <- 0 until samplesHeap.size()) {
+      val idx = samplesArr(i)
+      val lenSq = lengthsSquared(idx.index)
+      val d = vecLenSq + lenSq - 2 * MLUtils.dotProduct(vec, points(idx.index))
+      if (d < distance) {
+        distance = d
+        closestPoint = idx.index
+      }
+    }
+
+    (distance, closestPoint)
+  }
+
+  def sampleClosest(vec: Array[Double]) {
+    val q = index(vec)
+    samplesHeap.clear()
+    val bitset = new BitSet(q.size)
+    var i = 0
+    while (i < indices.size) {
+      bitset.clear()
+      val idx = new Idx(hammingDistance(bitset, q, indices(i)), i)
+      if (samplesHeap.size < projectionSamples) {
+        samplesHeap.add(idx)
+      } else if (idx.compareTo(samplesHeap.peek) < 0) {
+        samplesHeap.remove()
+        samplesHeap.add(idx)
+      }
+      i += 1
+    }
+  }
+
+  def hammingDistance(x: BitSet, q: BitSet, idx: BitSet): Int = {
+    x.or(q)
+    x.xor(idx)
+    x.cardinality()
+  }
+
+  def add(vec: Array[Double], centerId: Int) {
+    points += vec
+    lengthsSquared += MLUtils.dotProduct(vec, vec)
+    indices += index(vec)
+  }
+
+  def index(vec: Array[Double]): BitSet = {
+    val prod = new Array[Double](projectionBits)
+
+    var i = 0
+    while (i < vec.length) {
+      var j = 0
+      while (j < projectionBits) {
+        prod(j) += vec(i) * projection(i + j * dimensions)
+        j += 1
+      }
+      i += 1
+    }
+
+    val bitset = new BitSet(projectionBits)
+    i = 0
+    while (i < projectionBits) {
+      if (prod(i) > 0.0) {
+        bitset.set(i)
+      }
+      i += 1
+    }
+    bitset
+  }
+
+  class Idx(val distance: Int, val index: Int) extends Comparable[Idx] with Serializable {
+    def compareTo(idx: Idx): Int = {
+      distance - idx.distance
+    }
+
+    override def equals(o: Any): Boolean = {
+      val other = o.asInstanceOf[Idx]
+      distance == other.distance && index == other.index;
+    }
+
+    override def hashCode(): Int = {
+      distance ^ index
+    }
+  }
+}
 
 /**
  * Top-level methods for calling K-means clustering.
