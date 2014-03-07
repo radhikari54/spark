@@ -20,10 +20,10 @@ from distutils.core import setup
 
 setup(
     name='pyspark',
-    version='0.9.0-incubating-SNAPSHOT',
+    version='1.0.0-SNAPSHOT',
     description='Python API for Spark',
     author='The Apache Software Foundation',
-    author_email='user@spark.incubator.apache.org',
+    author_email='user@spark.apache.org',
     license='Apache License 2.0',
     url='spark-project.org',
     packages=['pyspark'],
