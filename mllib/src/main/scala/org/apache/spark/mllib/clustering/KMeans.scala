@@ -53,6 +53,7 @@ class KMeans private (
   extends Serializable with Logging
 {
   private type ClusterCenters = Array[Array[Double]]
+  var trainingStats: KMeansTrainingStats = null
 
   def this() = this(2, 20, 1, KMeans.K_MEANS_PARALLEL, 5, 1e-4)
 
@@ -130,13 +131,16 @@ class KMeans private (
   def run(data: RDD[Array[Double]]): KMeansModel = {
     // TODO: check whether data is persistent; this needs RDD.storageLevel to be publicly readable
 
+    trainingStats = new KMeansTrainingStats(runs)
     val sc = data.sparkContext
 
+    val initCentersStartTime = System.currentTimeMillis
     val centers = if (initializationMode == KMeans.RANDOM) {
       initRandom(data)
     } else {
-      initKMeansParallel(data)
+      initKMeansParallel(data, trainingStats)
     }
+    trainingStats.initCentersTime = (System.currentTimeMillis - initCentersStartTime)
 
     val active = Array.fill(runs)(true)
     val costs = Array.fill(runs)(0.0)
@@ -145,6 +149,7 @@ class KMeans private (
     var iteration = 0
 
     // Execute iterations of Lloyd's algorithm until all runs have converged
+    val lloydsStartTime = System.currentTimeMillis
     while (iteration < maxIterations && !activeRuns.isEmpty) {
       type WeightedPoint = (DoubleMatrix, Long)
       def mergeContribs(p1: WeightedPoint, p2: WeightedPoint): WeightedPoint = {
@@ -176,6 +181,12 @@ class KMeans private (
         contribs.iterator
       }.reduceByKey(mergeContribs).collectAsMap()
 
+      if (iteration == 0) {
+        for (i <- 0 until costAccums.size) {
+          trainingStats.initialCosts(i) = costAccums(i).value
+        }
+      }
+
       // Update the cluster centers and costs for each active run
       for ((run, i) <- activeRuns.zipWithIndex) {
         var changed = false
@@ -192,6 +203,8 @@ class KMeans private (
         if (!changed) {
           active(run) = false
           logInfo("Run " + run + " finished in " + (iteration + 1) + " iterations")
+          trainingStats.numIterations(run) = (iteration + 1)
+          trainingStats.finalCosts(run) = costAccums(i).value
         }
         costs(run) = costAccums(i).value
       }
@@ -199,6 +212,7 @@ class KMeans private (
       activeRuns = activeRuns.filter(active(_))
       iteration += 1
     }
+    trainingStats.lloydsTime = (System.currentTimeMillis - lloydsStartTime)
 
     val bestRun = costs.zipWithIndex.min._2
     new KMeansModel(centers(bestRun))
@@ -222,7 +236,8 @@ class KMeans private (
    *
    * The original paper can be found at http://theory.stanford.edu/~sergei/papers/vldb12-kmpar.pdf.
    */
-  private def initKMeansParallel(data: RDD[Array[Double]]): Array[ClusterCenters] = {
+  private def initKMeansParallel(data: RDD[Array[Double]],
+      trainingStats: KMeansTrainingStats): Array[ClusterCenters] = {
     // Initialize each run's center to a random point
     val seed = new XORShiftRandom().nextInt()
     val sample = data.takeSample(true, runs, seed).toSeq
@@ -251,6 +266,7 @@ class KMeans private (
         } yield (r, p)
       }.collect()
       for ((r, p) <- chosen) {
+        trainingStats.pointsSelectedPerInitIter(r) += p.length
         centers(r) += p
       }
     }
