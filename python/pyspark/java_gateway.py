@@ -15,7 +15,6 @@
 # limitations under the License.
 #
 
-from glob import glob
 import os
 import sys
 import signal
@@ -89,8 +88,7 @@ def set_env_vars_for_yarn(pyspark_zip):
     else:
         env_map["PYTHONPATH"] = os.path.basename(pyspark_zip)
 
-    os.environ["SPARK_YARN_USER_ENV"] = ",".join(map(lambda v: v[0] + "=" + v[1],
-        env_map.items()))
+    os.environ["SPARK_YARN_USER_ENV"] = ",".join(k + '=' + v for (k, v) in env_map.items())
 
 def parse_env(env_str):
     # Turns a comma-separated of env settings into a dict that maps env vars to
@@ -100,5 +98,8 @@ def parse_env(env_str):
         parts = var_str.split("=")
         if len(parts) == 2:
             env[parts[0]] = parts[1]
+        else if len(var_str) > 0:
+            print "Invalid entry in SPARK_YARN_USER_ENV: " + var_str
+            sys.exit(1)
     
     return env
