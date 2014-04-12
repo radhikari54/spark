@@ -98,7 +98,7 @@ def parse_env(env_str):
         parts = var_str.split("=")
         if len(parts) == 2:
             env[parts[0]] = parts[1]
-        else if len(var_str) > 0:
+        elif len(var_str) > 0:
             print "Invalid entry in SPARK_YARN_USER_ENV: " + var_str
             sys.exit(1)
     
