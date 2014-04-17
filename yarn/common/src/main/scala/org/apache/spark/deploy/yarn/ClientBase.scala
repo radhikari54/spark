@@ -48,9 +48,12 @@ import org.apache.hadoop.yarn.api.ApplicationConstants.Environment
 
 
 /**
- * The entry point (starting in Client#main() and Client#run()) for launching Spark on YARN. The
- * Client submits an application to the global ResourceManager to launch Spark's ApplicationMaster,
- * which will launch a Spark master process and negotiate resources throughout its duration.
+ * The entry point (starting in Client#main() and Client#run()) for launching Spark apps on YARN.
+ * The Client is used for both of Spark on YARN's deploy modes. It submits an application to YARN'S
+ * global ResourceManager, launching an application master. With the "yarn-client" deploy mode, this
+ * application master is responsible for negotiating resources and launching executor processes in
+ * YARN containers. With the "yarn-cluster" deploy mode, the application does all this, as well as
+ * runs the Spark app's driver.
  */
 trait ClientBase extends Logging {
   val args: ClientArguments
