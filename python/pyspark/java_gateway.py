@@ -84,9 +84,9 @@ def set_env_vars_for_yarn(pyspark_zip):
     # Add the pyspark zip to the python path
     env_map = parse_env(os.environ.get("SPARK_YARN_USER_ENV", ""))
     if "PYTHONPATH" in env_map:
-        env_map["PYTHONPATH"] += (":" + os.path.basename(pyspark_zip))
+        env_map["PYTHONPATH"] += ":spark.jar"
     else:
-        env_map["PYTHONPATH"] = os.path.basename(pyspark_zip)
+        env_map["PYTHONPATH"] = "spark.jar"
 
     os.environ["SPARK_YARN_USER_ENV"] = ",".join(k + '=' + v for (k, v) in env_map.items())
 
