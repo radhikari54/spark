@@ -17,6 +17,8 @@
 
 package org.apache.spark
 
+import java.util.Comparator
+
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.util.collection.{AppendOnlyMap, ExternalAppendOnlyMap}
 
@@ -33,6 +35,11 @@ case class Aggregator[K, V, C] (
     createCombiner: V => C,
     mergeValue: (C, V) => C,
     mergeCombiners: (C, C) => C) {
+  private var comparator: Option[Comparator[(K, C)]] = None
+
+  def setComparator(comparator: Comparator[(K, C)]) {
+    this.comparator = Option(comparator)
+  }
 
   private val externalSorting = SparkEnv.get.conf.getBoolean("spark.shuffle.spill", true)
 
@@ -52,17 +59,19 @@ case class Aggregator[K, V, C] (
         kv = iter.next()
         combiners.changeValue(kv._1, update)
       }
-      combiners.iterator
+      comparator.map(c => combiners.destructiveSortedIterator(c)).getOrElse(combiners.iterator)
     } else {
-      val combiners = new ExternalAppendOnlyMap[K, V, C](createCombiner, mergeValue, mergeCombiners)
+      val combiners = new ExternalAppendOnlyMap[K, V, C](createCombiner, mergeValue,
+        mergeCombiners, customizedComparator = comparator)
+      var kv: Product2[K, V] = null
       while (iter.hasNext) {
-        val (k, v) = iter.next()
-        combiners.insert(k, v)
+        kv = iter.next()
+        combiners.insert(kv._1, kv._2)
       }
       // TODO: Make this non optional in a future release
       Option(context).foreach(c => c.taskMetrics.memoryBytesSpilled = combiners.memoryBytesSpilled)
       Option(context).foreach(c => c.taskMetrics.diskBytesSpilled = combiners.diskBytesSpilled)
-      combiners.iterator
+      comparator.map(c => combiners.sortedIterator).getOrElse(combiners.iterator)
     }
   }
 
@@ -81,9 +90,10 @@ case class Aggregator[K, V, C] (
         kc = iter.next()
         combiners.changeValue(kc._1, update)
       }
-      combiners.iterator
+      comparator.map(c => combiners.destructiveSortedIterator(c)).getOrElse(combiners.iterator)
     } else {
-      val combiners = new ExternalAppendOnlyMap[K, C, C](identity, mergeCombiners, mergeCombiners)
+      val combiners = new ExternalAppendOnlyMap[K, C, C](identity, mergeCombiners,
+        mergeCombiners, customizedComparator = comparator)
       while (iter.hasNext) {
         val (k, c) = iter.next()
         combiners.insert(k, c)
@@ -91,7 +101,7 @@ case class Aggregator[K, V, C] (
       // TODO: Make this non optional in a future release
       Option(context).foreach(c => c.taskMetrics.memoryBytesSpilled = combiners.memoryBytesSpilled)
       Option(context).foreach(c => c.taskMetrics.diskBytesSpilled = combiners.diskBytesSpilled)
-      combiners.iterator
+      comparator.map(c => combiners.sortedIterator).getOrElse(combiners.iterator)
     }
   }
 }
