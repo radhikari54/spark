@@ -28,6 +28,39 @@ import org.apache.spark.network.{ManagedBuffer, BlockFetchingListener, BlockTran
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.util.{CompletionIterator, Utils}
 
+private[spark]
+final class ShuffleBlockFetcherIterator(
+    context: TaskContext,
+    blockTransferService: BlockTransferService,
+    blockManager: BlockManager,
+    blocksByAddress: Seq[(BlockManagerId, Seq[(BlockId, Long)])],
+    serializer: Serializer,
+    maxBytesInFlight: Long)
+  extends Iterator[(BlockId, Option[Iterator[Any]])] {
+
+  val shuffleRawBlockFetcherItr = new ShuffleRawBlockFetcherIterator(
+    context,
+    blockTransferService,
+    blockManager,
+    blocksByAddress,
+    maxBytesInFlight)
+
+  def hasNext: Boolean = shuffleRawBlockFetcherItr.hasNext
+
+  def next(): (BlockId, Option[Iterator[Any]]) = {
+    val (blockId, rawBuf) = shuffleRawBlockFetcherItr.next()
+    (blockId, rawBuf.map { b =>
+      val is = blockManager.wrapForCompression(blockId, b.inputStream())
+      val iter = serializer.newInstance().deserializeStream(is).asIterator
+      CompletionIterator[Any, Iterator[Any]](iter, {
+        // Once the iterator is exhausted, release the buffer and set currentResult to null
+        // so we don't release it again in cleanup.
+        b.release()
+        shuffleRawBlockFetcherItr.currentResult = null
+      })
+    })
+  }
+}
 
 /**
  * An iterator that fetches multiple blocks. For local blocks, it fetches from the local block
@@ -45,20 +78,18 @@ import org.apache.spark.util.{CompletionIterator, Utils}
  * @param blocksByAddress list of blocks to fetch grouped by the [[BlockManagerId]].
  *                        For each block we also require the size (in bytes as a long field) in
  *                        order to throttle the memory usage.
- * @param serializer serializer used to deserialize the data.
  * @param maxBytesInFlight max size (in bytes) of remote blocks to fetch at any given point.
  */
 private[spark]
-final class ShuffleBlockFetcherIterator(
+final class ShuffleRawBlockFetcherIterator(
     context: TaskContext,
     blockTransferService: BlockTransferService,
     blockManager: BlockManager,
     blocksByAddress: Seq[(BlockManagerId, Seq[(BlockId, Long)])],
-    serializer: Serializer,
     maxBytesInFlight: Long)
-  extends Iterator[(BlockId, Option[Iterator[Any]])] with Logging {
+  extends Iterator[(BlockId, Option[ManagedBuffer])] with Logging {
 
-  import ShuffleBlockFetcherIterator._
+  import ShuffleRawBlockFetcherIterator._
 
   /**
    * Total number of blocks to fetch. This can be smaller than the total number of blocks
@@ -92,7 +123,7 @@ final class ShuffleBlockFetcherIterator(
    * Current [[FetchResult]] being processed. We track this so we can release the current buffer
    * in case of a runtime exception when processing the current buffer.
    */
-  private[this] var currentResult: FetchResult = null
+  private[spark] var currentResult: FetchResult = null
 
   /**
    * Queue of fetch requests to issue; we'll pull requests off this gradually to make sure that
@@ -267,7 +298,7 @@ final class ShuffleBlockFetcherIterator(
 
   override def hasNext: Boolean = numBlocksProcessed < numBlocksToFetch
 
-  override def next(): (BlockId, Option[Iterator[Any]]) = {
+  override def next(): (BlockId, Option[ManagedBuffer]) = {
     numBlocksProcessed += 1
     val startFetchWait = System.currentTimeMillis()
     currentResult = results.take()
@@ -283,26 +314,13 @@ final class ShuffleBlockFetcherIterator(
       sendRequest(fetchRequests.dequeue())
     }
 
-    val iteratorOpt: Option[Iterator[Any]] = if (result.failed) {
-      None
-    } else {
-      val is = blockManager.wrapForCompression(result.blockId, result.buf.inputStream())
-      val iter = serializer.newInstance().deserializeStream(is).asIterator
-      Some(CompletionIterator[Any, Iterator[Any]](iter, {
-        // Once the iterator is exhausted, release the buffer and set currentResult to null
-        // so we don't release it again in cleanup.
-        currentResult = null
-        result.buf.release()
-      }))
-    }
-
-    (result.blockId, iteratorOpt)
+    (result.blockId, if (result.failed) None else Some(result.buf))
   }
 }
 
 
 private[storage]
-object ShuffleBlockFetcherIterator {
+object ShuffleRawBlockFetcherIterator {
 
   /**
    * A request to fetch blocks from a remote BlockManager.
